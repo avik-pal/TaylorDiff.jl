@@ -1,20 +1,24 @@
 using BenchmarkTools
-using Random: seed!
-using ForwardDiff, Zygote, Flux
+using Random: seed!, default_rng
+using ForwardDiff, Zygote
 using TaylorSeries: Taylor1
 using TaylorDiff
 
-seed!(19260817)
+rng = default_rng()
+seed!(rng, 19260817)
 
-include("scalar.jl")
-include("mlp.jl")
-include("taylor_expansion.jl")
-include("pinn.jl")
+using Logging
+Logging.disable_logging(Logging.Warn)
+
+include("groups/scalar.jl")
+include("groups/mlp.jl")
+include("groups/taylor_expansion.jl")
+include("groups/pinn.jl")
 
 scalar = create_benchmark_scalar_function(sin, 0.1)
 mlp = create_benchmark_mlp((2, 16), [2.0, 3.0], [1.0, 1.0])
 
 const SUITE = BenchmarkGroup("scalar" => scalar,
-                             "mlp" => mlp,
-                             "taylor_expansion" => taylor_expansion,
-                             "pinn" => pinn)
+    "mlp" => mlp,
+    "taylor_expansion" => taylor_expansion,
+    "pinn" => pinn)

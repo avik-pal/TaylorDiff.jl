@@ -31,9 +31,9 @@ TaylorDiff.jl is fast! See our dedicated [benchmarks](https://benchmark.tansongc
 using TaylorDiff
 
 x = 0.1
-derivative(sin, x, 10) # scalar derivative
+derivative(sin, x, Val(10)) # scalar derivative
 v, direction = [3.0, 4.0], [1.0, 0.0]
-derivative(x -> sum(exp.(x)), v, direction, 2) # directional derivative
+derivative(x -> sum(exp.(x)), v, direction, Val(2)) # directional derivative
 ```
 
 Please see our [documentation](https://juliadiff.org/TaylorDiff.jl) for more details.
@@ -42,7 +42,7 @@ Please see our [documentation](https://juliadiff.org/TaylorDiff.jl) for more det
 
 - [TaylorSeries.jl](https://github.com/JuliaDiff/TaylorSeries.jl): a systematic treatment of Taylor polynomials in one and several variables, but its mutating and scalar code isn't great for speed and composability with other packages
 - [ForwardDiff.jl](https://github.com/JuliaDiff/ForwardDiff.jl): well-established and robust operator-overloading based forward-mode AD, where higher-order derivatives can be achieved by nesting first-order derivatives
-- [Diffractor.jl](https://github.com/PumasAI/SimpleChains.jl): next-generation source-code transformation based forward-mode and reverse-mode AD, designed with support for higher-order derivatives in mind; but the higher-order functionality is currently only a proof-of-concept
+- [Diffractor.jl](https://github.com/JuliaDiff/Diffractor.jl): next-generation source-code transformation based forward-mode and reverse-mode AD, designed with support for higher-order derivatives in mind; but the higher-order functionality is currently only a proof-of-concept
 - [`jax.jet`](https://jax.readthedocs.io/en/latest/jax.experimental.jet.html): an experimental (and unmaintained) implementation of Taylor-mode automatic differentiation in JAX, sharing the same underlying algorithm with this project
 
 ## Citation
