@@ -1,126 +1,125 @@
-import ChainRulesCore: rrule, RuleConfig, ProjectTo, backing
+import ChainRulesCore: rrule, RuleConfig, ProjectTo, backing, @opt_out
 using Base.Broadcast: broadcasted
-import Zygote: @adjoint, accum_sum, unbroadcast, Numeric, ∇getindex, _project
 
-function contract(a::TaylorScalar{T, N}, b::TaylorScalar{S, N}) where {T, S, N}
-    mapreduce(*, +, value(a), value(b))
+function rrule(::Type{TaylorScalar}, v::T, p::NTuple{N, T}) where {N, T}
+    constructor_pullback(t̄) = NoTangent(), value(t̄), partials(t̄)
+    return TaylorScalar(v, p), constructor_pullback
 end
 
-function rrule(::Type{TaylorScalar{T, N}}, v::NTuple{N, T}) where {N, T <: Number}
-    taylor_scalar_pullback(t̄) = NoTangent(), value(t̄)
-    return TaylorScalar(v), taylor_scalar_pullback
+function rrule(::Type{TaylorArray}, v::T, p::NTuple{N, T}) where {N, T}
+    constructor_pullback(t̄) = NoTangent(), value(t̄), partials(t̄)
+    return TaylorArray(v, p), constructor_pullback
 end
 
 function rrule(::typeof(value), t::TaylorScalar{T, N}) where {N, T}
-    value_pullback(v̄::NTuple{N, T}) = NoTangent(), TaylorScalar(v̄)
-    # for structural tangent, convert to tuple
-    function value_pullback(v̄::Tangent{P, NTuple{N, T}}) where {P}
-        NoTangent(), TaylorScalar{T, N}(backing(v̄))
-    end
-    value_pullback(v̄) = NoTangent(), TaylorScalar{T, N}(map(x -> convert(T, x), Tuple(v̄)))
+    value_pullback(v̄::T) = NoTangent(), TaylorScalar{T, N}(v̄)
     return value(t), value_pullback
 end
 
-function rrule(::typeof(extract_derivative), t::TaylorScalar{T, N},
-               i::Integer) where {N, T <: Number}
+function rrule(::typeof(partials), t::TaylorScalar{T, N}) where {N, T}
+    z = zero(T)
+    partials_pullback(v̄::NTuple{N, T}) = NoTangent(), TaylorScalar(z, v̄)
+    # for structural tangent, convert to tuple
+    function partials_pullback(v̄::Tangent{P, NTuple{N, T}}) where {P}
+        NoTangent(), TaylorScalar(z, backing(v̄))
+    end
+    function partials_pullback(::ZeroTangent)
+        NoTangent(), TaylorScalar(z, ntuple(j -> zero(T), Val(N)))
+    end
+    return partials(t), partials_pullback
+end
+
+function rrule(::typeof(partials), t::TaylorArray{T, N, A, P}) where {N, T, A, P}
+    function partials_pullback(v̄::NTuple{P, A})
+        NoTangent(), TaylorArray(broadcast(zero, v̄[1]), v̄)
+    end
+    return partials(t), partials_pullback
+end
+
+function rrule(::typeof(extract_derivative), t::TaylorScalar{T, P},
+        q::Val{Q}) where {T, P, Q}
     function extract_derivative_pullback(d̄)
-        NoTangent(), TaylorScalar{T, N}(ntuple(j -> j === i ? d̄ : zero(T), Val(N))),
+        NoTangent(),
+        TaylorScalar(zero(T), ntuple(j -> j === Q ? d̄ * factorial(Q) : zero(T), Val(P))),
         NoTangent()
     end
-    return extract_derivative(t, i), extract_derivative_pullback
+    return extract_derivative(t, q), extract_derivative_pullback
+end
+
+function rrule(::typeof(Base.getindex), a::TaylorArray, i::Int...)
+    function getindex_pullback(t̄)
+        ā = similar(a)
+        ā .= zero(eltype(a))
+        ā[i...] = t̄
+        NoTangent(), ā, map(Returns(NoTangent()), i)
+    end
+    return getindex(a, i...), getindex_pullback
 end
 
 function rrule(::typeof(*), A::AbstractMatrix{S},
-               t::Vector{TaylorScalar{T, N}}) where {N, S <: Number, T}
+        t::AbstractVector{TaylorScalar{T, N}}) where {N, S <: Real, T <: Real}
     project_A = ProjectTo(A)
     function gemv_pullback(x̄)
-        NoTangent(), @thunk(project_A(contract.(x̄, transpose(t)))), @thunk(transpose(A)*x̄)
+        x̂ = reinterpret(reshape, T, x̄)
+        t̂ = reinterpret(reshape, T, t)
+        NoTangent(), @thunk(project_A(transpose(x̂) * t̂)), @thunk(transpose(A)*x̄)
     end
     return A * t, gemv_pullback
 end
 
-@adjoint function +(t::Vector{TaylorScalar{T, N}}, v::Vector{T}) where {N, T <: Number}
-    project_v = ProjectTo(v)
-    t + v, x̄ -> (x̄, project_v(x̄))
+function rrule(::typeof(*), A::AbstractMatrix{S},
+        B::AbstractMatrix{TaylorScalar{T, N}}) where {N, S <: Real, T <: Real}
+    project_A = ProjectTo(A)
+    project_B = ProjectTo(B)
+    function gemm_pullback(x̄)
+        X̄ = unthunk(x̄)
+        NoTangent(),
+        @thunk(project_A(X̄ * transpose(B))),
+        @thunk(project_B(transpose(A) * X̄))
+    end
+    return A * B, gemm_pullback
 end
 
-@adjoint function +(v::Vector{T}, t::Vector{TaylorScalar{T, N}}) where {N, T <: Number}
-    project_v = ProjectTo(v)
-    v + t, x̄ -> (project_v(x̄), x̄)
+(project::ProjectTo{T})(dx::TaylorScalar{T, N}) where {N, T <: Number} = value(dx)
+
+# opt-outs
+
+# Unary functions
+
+for f in (
+    exp, exp10, exp2, expm1,
+    sin, cos, tan, sec, csc, cot,
+    sinh, cosh, tanh, sech, csch, coth,
+    log, log10, log2, log1p,
+    asin, acos, atan, asec, acsc, acot,
+    asinh, acosh, atanh, asech, acsch, acoth,
+    sqrt, cbrt, inv
+)
+    @eval @opt_out frule(::typeof($f), x::TaylorScalar)
+    @eval @opt_out rrule(::typeof($f), x::TaylorScalar)
 end
 
-(project::ProjectTo{T})(dx::TaylorScalar{T, N}) where {N, T <: Number} = primal(dx)
+# Binary functions
 
-# Not-a-number patches
-
-ProjectTo(::T) where {T <: TaylorScalar} = ProjectTo{T}()
-(p::ProjectTo{T})(x::T) where {T <: TaylorScalar} = x
-function ProjectTo(x::AbstractArray{T}) where {T <: TaylorScalar}
-    ProjectTo{AbstractArray}(; element = ProjectTo(zero(T)), axes = axes(x))
-end
-(p::ProjectTo{AbstractArray{T}})(x::AbstractArray{T}) where {T <: TaylorScalar} = x
-accum_sum(xs::AbstractArray{T}; dims = :) where {T <: TaylorScalar} = sum(xs, dims = dims)
-
-TaylorNumeric{T <: TaylorScalar} = Union{T, AbstractArray{<:T}}
-
-@adjoint function broadcasted(::typeof(+), xs::Union{Numeric, TaylorNumeric}...)
-    broadcast(+, xs...), ȳ -> (nothing, map(x -> unbroadcast(x, ȳ), xs)...)
-end
-
-struct TaylorOneElement{T, N, I, A} <: AbstractArray{T, N}
-    val::T
-    ind::I
-    axes::A
-    function TaylorOneElement(val::T, ind::I,
-                              axes::A) where {T <: TaylorScalar, I <: NTuple{N, Int},
-                                              A <: NTuple{N, AbstractUnitRange}} where {N}
-        new{T, N, I, A}(val, ind, axes)
+for f in (
+    *, /, ^
+)
+    for (tlhs, trhs) in (
+        (TaylorScalar, TaylorScalar),
+        (TaylorScalar, Number),
+        (Number, TaylorScalar)
+    )
+        @eval @opt_out frule(::typeof($f), x::$tlhs, y::$trhs)
+        @eval @opt_out rrule(::typeof($f), x::$tlhs, y::$trhs)
     end
 end
 
-Base.size(A::TaylorOneElement) = map(length, A.axes)
-Base.axes(A::TaylorOneElement) = A.axes
-function Base.getindex(A::TaylorOneElement{T, N}, i::Vararg{Int, N}) where {T, N}
-    ifelse(i == A.ind, A.val, zero(T))
-end
+# Multi-argument functions
 
-function ∇getindex(x::AbstractArray{T, N}, inds) where {T <: TaylorScalar, N}
-    dy -> begin
-        dx = TaylorOneElement(dy, inds, axes(x))
-        return (_project(x, dx), map(_ -> nothing, inds)...)
-    end
-end
+@opt_out frule(::typeof(*), x::TaylorScalar, y::TaylorScalar, z::TaylorScalar)
+@opt_out rrule(::typeof(*), x::TaylorScalar, y::TaylorScalar, z::TaylorScalar)
 
-@generated function mul_adjoint(Ω::TaylorScalar{T, N}, x::TaylorScalar{T, N}) where {T, N}
-    return quote
-        vΩ, vx = value(Ω), value(x)
-        @inbounds TaylorScalar($([:(+($([:($(binomial(j - 1, i - 1)) * vΩ[$j] *
-                                           vx[$(j + 1 - i)]) for j in i:N]...)))
-                                  for i in 1:N]...))
-    end
-end
-
-rrule(::typeof(*), x::TaylorScalar) = rrule(identity, x)
-
-function rrule(::typeof(*), x::TaylorScalar, y::TaylorScalar)
-    function times_pullback2(Ω̇)
-        ΔΩ = unthunk(Ω̇)
-        return (NoTangent(), ProjectTo(x)(mul_adjoint(ΔΩ, y)),
-                ProjectTo(y)(mul_adjoint(ΔΩ, x)))
-    end
-    return x * y, times_pullback2
-end
-
-function rrule(::typeof(*), x::TaylorScalar, y::TaylorScalar, z::TaylorScalar,
-               more::TaylorScalar...)
-    Ω2, back2 = rrule(*, x, y)
-    Ω3, back3 = rrule(*, Ω2, z)
-    Ω4, back4 = rrule(*, Ω3, more...)
-    function times_pullback4(Ω̇)
-        Δ4 = back4(unthunk(Ω̇))  # (0, ΔΩ3, Δmore...)
-        Δ3 = back3(Δ4[2])       # (0, ΔΩ2, Δz)
-        Δ2 = back2(Δ3[2])       # (0, Δx, Δy)
-        return (Δ2..., Δ3[3], Δ4[3:end]...)
-    end
-    return Ω4, times_pullback4
-end
+@opt_out frule(
+    ::typeof(*), x::TaylorScalar, y::TaylorScalar, z::TaylorScalar, more::TaylorScalar...)
+@opt_out rrule(
+    ::typeof(*), x::TaylorScalar, y::TaylorScalar, z::TaylorScalar, more::TaylorScalar...)

@@ -1,86 +1,59 @@
-import Base: zero, one, adjoint, conj, transpose
-import Base: +, -, *, /
-import Base: convert, promote_rule
-
 export TaylorScalar
 
 """
-    TaylorScalar{T, N}
+    TaylorScalar{T, P}
 
 Representation of Taylor polynomials.
 
 # Fields
 
-- `value::NTuple{N, T}`: i-th element of this stores the (i-1)-th derivative
+- `value::T`: zeroth order coefficient
+- `partials::NTuple{P, T}`: i-th element of this stores the i-th derivative
 """
-struct TaylorScalar{T, N}
-    value::NTuple{N, T}
-end
-
-TaylorOrNumber = Union{TaylorScalar, Number}
-
-@inline TaylorScalar(xs::Vararg{T, N}) where {T, N} = TaylorScalar(xs)
-
-"""
-    TaylorScalar{T, N}(x::T) where {T, N}
-
-Construct a Taylor polynomial with zeroth order coefficient.
-"""
-@generated function TaylorScalar{T, N}(x::T) where {T, N}
-    return quote
-        $(Expr(:meta, :inline))
-        TaylorScalar((T(x), $(zeros(T, N - 1)...)))
+struct TaylorScalar{T, P} <: Real
+    value::T
+    partials::NTuple{P, T}
+    function TaylorScalar(value::T, partials::NTuple{P, T}) where {T, P}
+        can_taylorize(T) || throw_cannot_taylorize(T)
+        new{T, P}(value, partials)
     end
 end
 
+# Allowing promotion of basic Number types
+TaylorScalar{T, P}(x) where {T, P} = TaylorScalar{P}(T(x))
+
+# Allowing construction with flattened value and partials in a tuple
+TaylorScalar(all::NTuple{P, T}) where {T, P} = TaylorScalar(all[1], all[2:end])
+
 """
-    TaylorScalar{T, N}(x::T, d::T) where {T, N}
+    TaylorScalar{P}(value::T) where {T, P}
 
-Construct a Taylor polynomial with zeroth and first order coefficient, acting as a seed.
+Convenience function: construct a Taylor polynomial with zeroth order coefficient.
 """
-@generated function TaylorScalar{T, N}(x::T, d::T) where {T, N}
-    return quote
-        $(Expr(:meta, :inline))
-        TaylorScalar((T(x), T(d), $(zeros(T, N - 2)...)))
-    end
+TaylorScalar{P}(value::T) where {T, P} = TaylorScalar(value, ntuple(i -> zero(T), Val(P)))
+
+"""
+    TaylorScalar{P}(value::T, seed::T)
+
+Convenience function: construct a Taylor polynomial with zeroth and first order coefficient, acting as a seed.
+"""
+TaylorScalar{P}(value::T, seed::T) where {T, P} = TaylorScalar(
+    value, ntuple(i -> i == 1 ? seed : zero(T), Val(P)))
+
+# Truncate or extend the order of a Taylor polynomial.
+function TaylorScalar{P}(t::TaylorScalar{T, Q}) where {T, P, Q}
+    v = value(t)
+    p = partials(t)
+    P <= Q ? TaylorScalar(v, p[1:P]) :
+    TaylorScalar(v, ntuple(i -> i <= Q ? p[i] : zero(T), Val(P)))
 end
 
-@generated function TaylorScalar{T, N}(t::TaylorScalar{T, M}) where {T, N, M}
-    N <= M ? quote
-        $(Expr(:meta, :inline))
-        TaylorScalar(value(t)[1:N])
-    end : quote
-        $(Expr(:meta, :inline))
-        TaylorScalar((value(t)..., $(zeros(T, N - M)...)))
-    end
+# Covariant: operate on the value, and reconstruct with the partials
+for op in Symbol[:nextfloat, :prevfloat]
+    @eval Base.$(op)(x::TaylorScalar) = TaylorScalar(Base.$(op)(value(x)), partials(x))
 end
 
-@inline value(t::TaylorScalar) = t.value
-@inline extract_derivative(t::TaylorScalar, i::Integer) = t.value[i]
-@inline extract_derivative(r, i::Integer) = false
-@inline primal(t::TaylorScalar) = extract_derivative(t, 1)
-
-@inline zero(::Type{TaylorScalar{T, N}}) where {T, N} = TaylorScalar{T, N}(zero(T))
-@inline one(::Type{TaylorScalar{T, N}}) where {T, N} = TaylorScalar{T, N}(one(T))
-@inline zero(::TaylorScalar{T, N}) where {T, N} = zero(TaylorScalar{T, N})
-@inline one(::TaylorScalar{T, N}) where {T, N} = one(TaylorScalar{T, N})
-
-adjoint(t::TaylorScalar) = t
-conj(t::TaylorScalar) = t
-
-function promote_rule(::Type{TaylorScalar{T, N}},
-                      ::Type{S}) where {T, S, N}
-    TaylorScalar{promote_type(T, S), N}
+# Invariant: operate on the value, and drop the partials
+for op in Symbol[:isinf, :isnan, :isfinite, :iseven, :isodd, :isreal, :isinteger]
+    @eval Base.$(op)(x::TaylorScalar) = Base.$(op)(value(x))
 end
-
-# Number-like convention (I patched them after removing <: Number)
-
-convert(::Type{TaylorScalar{T, N}}, x::TaylorScalar{T, N}) where {T, N} = x
-function convert(::Type{TaylorScalar{T, N}}, x::S) where {T, S, N}
-    TaylorScalar{T, N}(convert(T, x))
-end
-for op in (:+, :-, :*, :/)
-    @eval @inline $op(a::TaylorScalar, b::Number) = $op(promote(a, b)...)
-    @eval @inline $op(a::Number, b::TaylorScalar) = $op(promote(a, b)...)
-end
-transpose(t::TaylorScalar) = t
